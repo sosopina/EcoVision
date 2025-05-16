@@ -1,15 +1,17 @@
 #include <Servo.h>
 
-// Updated Pins configuration as requested
-const int RED_PIN = 2;      // From ESP32 GPIO27
-const int GREEN_PIN = 3;    // From ESP32 GPIO26
-const int WHITE_PIN = 4;    // From ESP32 GPIO33
-const int RELAY_PIN = 5;    // Conveyor relay control
+// Pin Configuration
+const int RED_PIN = 2;
+const int GREEN_PIN = 3;
+const int WHITE_PIN = 4;
+const int DEFECT_PIN = 7;
+const int RELAY_PIN = 5;
 const int RED_SERVO_PIN = 10;
 const int GREEN_SERVO_PIN = 11;
 const int WHITE_SERVO_PIN = 9;
 
-// Timing configuration
+// Timing Configuration
+#define DEFECT_DELAY   5000
 #define RED_DELAY      5000
 #define GREEN_DELAY    5000
 #define WHITE_DELAY    5000
@@ -17,32 +19,34 @@ const int WHITE_SERVO_PIN = 9;
 #define RETURN_HOLD    2000
 
 Servo redServo, greenServo, whiteServo;
-enum State { IDLE, CONVEYOR_RUNNING, SERVO_ACTIVE };
+enum State { IDLE, CONVEYOR_RUNNING, SERVO_ACTIVE, DEFECT_PROCESSING };
 State currentState = IDLE;
 
 unsigned long actionStartTime;
 uint8_t activeColor = 0;
 
 void setup() {
-  // Configure input pins for color signals
+  // Initialize pins
   pinMode(RED_PIN, INPUT);
   pinMode(GREEN_PIN, INPUT);
   pinMode(WHITE_PIN, INPUT);
-  
-  // Configure relay output
+  pinMode(DEFECT_PIN, INPUT);
   pinMode(RELAY_PIN, OUTPUT);
+
+  // Initialize servos in hold position
+  redServo.attach(RED_SERVO_PIN);
+  greenServo.attach(GREEN_SERVO_PIN);
+  whiteServo.attach(WHITE_SERVO_PIN);
+  returnServosToStart();
+  
   digitalWrite(RELAY_PIN, LOW);
-  
-  // Initialize servos (detached initially)
-  detachAllServos();
-  
-  Serial.begin(9600);  // For debugging (optional)
+  Serial.begin(9600);
 }
 
 void loop() {
   switch(currentState) {
     case IDLE:
-      checkForColorSignal();
+      checkForSignals();
       break;
       
     case CONVEYOR_RUNNING:
@@ -52,26 +56,47 @@ void loop() {
     case SERVO_ACTIVE:
       handleServoMovement();
       break;
+      
+    case DEFECT_PROCESSING:
+      handleDefective();
+      break;
   }
 }
 
-void checkForColorSignal() {
-  if (digitalRead(RED_PIN)) {
-    startProcessing(1);  // Red
-  } else if (digitalRead(GREEN_PIN)) {
-    startProcessing(2);  // Green
-  } else if (digitalRead(WHITE_PIN)) {
-    startProcessing(3);  // White
+void checkForSignals() {
+  returnServosToStart();
+  
+  if (digitalRead(DEFECT_PIN)) {
+    startDefectiveProcessing();
+  }
+  else if (digitalRead(RED_PIN)) {
+    startColorProcessing(1);
+  }
+  else if (digitalRead(GREEN_PIN)) {
+    startColorProcessing(2);
+  }
+  else if (digitalRead(WHITE_PIN)) {
+    startColorProcessing(3);
   }
 }
 
-void startProcessing(uint8_t color) {
+void returnServosToStart() {
+  redServo.write(180);
+  greenServo.write(180);
+  whiteServo.write(180);
+}
+
+void startDefectiveProcessing() {
+  currentState = DEFECT_PROCESSING;
+  actionStartTime = millis();
+  digitalWrite(RELAY_PIN, HIGH);
+}
+
+void startColorProcessing(uint8_t color) {
   activeColor = color;
   currentState = CONVEYOR_RUNNING;
   actionStartTime = millis();
   digitalWrite(RELAY_PIN, HIGH);
-  Serial.print("Started processing color: ");
-  Serial.println(activeColor);
 }
 
 void handleConveyor() {
@@ -80,35 +105,24 @@ void handleConveyor() {
   if (millis() - actionStartTime >= colorDelay) {
     currentState = SERVO_ACTIVE;
     actionStartTime = millis();
-    digitalWrite(RELAY_PIN, LOW);  // Stop conveyor
+    digitalWrite(RELAY_PIN, LOW);
     activateServo();
   }
 }
 
 void activateServo() {
   switch(activeColor) {
-    case 1:  // Red
-      redServo.attach(RED_SERVO_PIN);
-      redServo.write(90);  // Push position
-      break;
-    case 2:  // Green
-      greenServo.attach(GREEN_SERVO_PIN);
-      greenServo.write(90);
-      break;
-    case 3:  // White
-      whiteServo.attach(WHITE_SERVO_PIN);
-      whiteServo.write(90);
-      break;
+    case 1: redServo.write(90); break;
+    case 2: greenServo.write(90); break;
+    case 3: whiteServo.write(90); break;
   }
-  Serial.print("Activated servo for color: ");
-  Serial.println(activeColor);
 }
 
 void handleServoMovement() {
   unsigned long elapsed = millis() - actionStartTime;
 
   if (elapsed >= PUSH_HOLD && elapsed < (PUSH_HOLD + RETURN_HOLD)) {
-    returnServoToStart();
+    returnServosToStart();
   }
   
   if (elapsed >= (PUSH_HOLD + RETURN_HOLD)) {
@@ -116,25 +130,17 @@ void handleServoMovement() {
   }
 }
 
-void returnServoToStart() {
-  switch(activeColor) {
-    case 1:
-      redServo.write(180);  // Rest position
-      break;
-    case 2:
-      greenServo.write(180);
-      break;
-    case 3:
-      whiteServo.write(180);
-      break;
+void handleDefective() {
+  if (millis() - actionStartTime >= DEFECT_DELAY) {
+    digitalWrite(RELAY_PIN, LOW);
+    currentState = IDLE;
   }
 }
 
 void finishProcessing() {
-  detachAllServos();
+  returnServosToStart();
   activeColor = 0;
   currentState = IDLE;
-  Serial.println("Processing complete. Ready for next item.");
 }
 
 unsigned long getColorDelay() {
@@ -144,10 +150,4 @@ unsigned long getColorDelay() {
     case 3: return WHITE_DELAY;
     default: return 0;
   }
-}
-
-void detachAllServos() {
-  redServo.detach();
-  greenServo.detach();
-  whiteServo.detach();
 }
