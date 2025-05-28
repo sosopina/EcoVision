@@ -1,0 +1,184 @@
+#include <Servo.h>
+
+// Conveyor Control Pin
+const int RELAY_PIN = 5;
+
+// Sorting Servo Pins
+const int RED_SERVO_PIN = 10;
+const int GREEN_SERVO_PIN = 11;
+const int WHITE_SERVO_PIN = 9;
+
+// Timing Configuration
+#define DEFECT_DELAY   5000  // 5 seconds conveyor run for defects
+#define RED_DELAY      5000  // 5 seconds for red items
+#define GREEN_DELAY    5000  // 5 seconds for green items
+#define WHITE_DELAY    5000  // 5 seconds for white items
+#define PUSH_HOLD      2000  // 2 seconds to hold sorting position
+#define RETURN_HOLD    2000  // 2 seconds to return to home position
+
+// Servo Objects
+Servo redServo, greenServo, whiteServo;
+
+// State Machine
+enum State { IDLE, CONVEYOR_RUNNING, SERVO_ACTIVE, DEFECT_PROCESSING };
+State currentState = IDLE;
+
+// Timing and Control
+unsigned long actionStartTime;
+uint8_t activeColor = 0;  // 0=none, 1=red, 2=green, 3=white
+
+void setup() {
+  // Initialize conveyor relay control
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
+  
+  // Attach sorting servos
+  redServo.attach(RED_SERVO_PIN);
+  greenServo.attach(GREEN_SERVO_PIN);
+  whiteServo.attach(WHITE_SERVO_PIN);
+  
+  // Initialize servos to home position
+  returnServosToStart();
+  
+  // Start serial communication at 9600 baud
+  Serial.begin(9600);
+}
+
+void loop() {
+  // Check for incoming serial commands
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    processCommand(command);
+  }
+
+  // Execute state machine
+  switch(currentState) {
+    case IDLE:
+      // Nothing to do, waiting for command
+      break;
+      
+    case CONVEYOR_RUNNING:
+      handleConveyor();
+      break;
+      
+    case SERVO_ACTIVE:
+      handleServoMovement();
+      break;
+      
+    case DEFECT_PROCESSING:
+      handleDefective();
+      break;
+  }
+}
+
+// Process incoming serial commands
+void processCommand(char cmd) {
+  // Only process commands when in IDLE state
+  if (currentState != IDLE) return;
+  
+  switch(cmd) {
+    case 'D':  // Defective item
+      startDefectiveProcessing();
+      break;
+    case 'R':  // Red item
+      startColorProcessing(1);
+      break;
+    case 'G':  // Green item
+      startColorProcessing(2);
+      break;
+    case 'W':  // White item
+      startColorProcessing(3);
+      break;
+    // Ignore unknown commands
+  }
+}
+
+// Return all sorting servos to home position
+void returnServosToStart() {
+  redServo.write(180);
+  greenServo.write(180);
+  whiteServo.write(180);
+}
+
+// Start defective item processing
+void startDefectiveProcessing() {
+  currentState = DEFECT_PROCESSING;
+  actionStartTime = millis();
+  digitalWrite(RELAY_PIN, HIGH);  // Start conveyor
+}
+
+// Start color-specific item processing
+void startColorProcessing(uint8_t color) {
+  activeColor = color;
+  currentState = CONVEYOR_RUNNING;
+  actionStartTime = millis();
+  digitalWrite(RELAY_PIN, HIGH);  // Start conveyor
+}
+
+// Handle conveyor running state
+void handleConveyor() {
+  unsigned long colorDelay = getColorDelay();
+  
+  // Check if conveyor has run long enough
+  if (millis() - actionStartTime >= colorDelay) {
+    currentState = SERVO_ACTIVE;
+    actionStartTime = millis();
+    digitalWrite(RELAY_PIN, LOW);  // Stop conveyor
+    activateSortingServo();         // Move appropriate servo
+  }
+}
+
+// Activate the correct sorting servo
+void activateSortingServo() {
+  switch(activeColor) {
+    case 1:  // Red
+      redServo.write(90);
+      break;
+    case 2:  // Green
+      greenServo.write(90);
+      break;
+    case 3:  // White
+      whiteServo.write(90);
+      break;
+  }
+}
+
+// Handle servo movement state
+void handleServoMovement() {
+  unsigned long elapsed = millis() - actionStartTime;
+
+  // After holding push position, return servos to start
+  if (elapsed >= PUSH_HOLD && elapsed < (PUSH_HOLD + RETURN_HOLD)) {
+    returnServosToStart();
+  }
+  
+  // After full sequence, return to idle
+  if (elapsed >= (PUSH_HOLD + RETURN_HOLD)) {
+    finishProcessing();
+  }
+}
+
+// Handle defective item processing
+void handleDefective() {
+  if (millis() - actionStartTime >= DEFECT_DELAY) {
+    digitalWrite(RELAY_PIN, LOW);  // Stop conveyor
+    currentState = IDLE;            // Return to idle
+  }
+}
+
+// Clean up after successful processing
+void finishProcessing() {
+  returnServosToStart();
+  activeColor = 0;          // Reset active color
+  currentState = IDLE;      // Return to idle state
+}
+
+// Get conveyor run time based on color
+unsigned long getColorDelay() {
+  switch(activeColor) {
+    case 1: return RED_DELAY;
+    case 2: return GREEN_DELAY;
+    case 3: return WHITE_DELAY;
+    default: return 0;  // Should never happen
+  }
+}
