@@ -1,0 +1,200 @@
+#include <Servo.h>
+#include <Wire.h>
+#include "Adafruit_TCS34725.h"
+
+// Servo Objects
+Servo servo1, servo2, servo3, servo4;
+
+// Color Sensor
+Adafruit_TCS34725 tcs = Adafruit_TCS34725(TCS34725_INTEGRATIONTIME_600MS, TCS34725_GAIN_1X);
+
+// Servo PWM Pins
+const int ARM1_PIN = 3;
+const int ARM2_PIN = 5;
+const int ARM3_PIN = 6;
+const int ARM4_PIN = 9;
+
+// Defect Sensor (with external 10kΩ pulldown resistor)
+const int DEFECT_SENSOR = 12;
+
+// State Machine
+enum State { IDLE, ARM_WORKING };
+State currentState = IDLE;
+uint8_t detectedColor = 0;
+bool isDefective = false;
+
+void setup() {
+  pinMode(DEFECT_SENSOR, INPUT);  // External pulldown required
+  
+  // Initialize color sensor
+  if (!tcs.begin()) {
+    // If sensor not found, halt execution
+    while(1); 
+  }
+  
+  // Start serial communication at 9600 baud
+  Serial.begin(9600);
+  
+  // Initialize servos in detached state
+  detachArmServos();
+}
+
+void loop() {
+  switch(currentState) {
+    case IDLE:
+      checkColor();  // Check for new objects
+      break;
+
+    case ARM_WORKING:
+      executeArmSequence();  // Process current object
+      break;
+  }
+}
+
+void checkColor() {
+  uint16_t r, g, b, c;
+  tcs.getRawData(&r, &g, &b, &c);
+
+  // Red detection
+  if (r > 12500 && r > g && r > b) {
+    startProcess(1);
+  } 
+  // Green detection
+  else if (g > 11500 && g > r && g > b) {
+    startProcess(2);
+  } 
+  // White detection
+  else if (r > 37000 && g > 37000 && b > 37000) {
+    startProcess(3);
+  }
+}
+
+void startProcess(uint8_t color) {
+  detectedColor = color;
+  isDefective = false;
+  currentState = ARM_WORKING;
+}
+
+void executeArmSequence() {
+  attachArmServos();        // Enable servo control
+  performInitialPickup();   // Grab the object
+  performAIStation();       // Check for defects
+  performSorting();         // Position for sorting
+  sendFinalSignal();        // Send result via serial
+  detachArmServos();        // Disable servos to save power
+  currentState = IDLE;      // Ready for next object
+}
+
+// ======== Arm Movement Sequences ======== //
+void performInitialPickup() {
+  servo4.write(190);
+  servo3.write(110);
+  servo1.write(50);
+  servo2.write(100);
+  delay(3000);
+  servo2.write(95);
+  delay(1000);
+  servo1.write(150);
+  servo2.write(105);
+  delay(500);
+  servo3.write(65);
+  delay(1000);
+  servo1.write(50);
+  delay(500);
+  servo2.write(130);
+  delay(500);
+}
+
+void performAIStation() {
+  servo4.write(90);
+  delay(500);
+  servo1.write(50);
+  smoothMove(servo2, 130, 100, 20);
+  smoothMove(servo1, 50, 155, 20);
+  delay(1000);
+  servo3.write(110);
+  delay(500);
+  servo2.write(80);
+  smoothMove(servo1, 155, 60, 20);
+  
+  // Check for defects
+  if (digitalRead(DEFECT_SENSOR) == HIGH) {
+    isDefective = true;
+  }
+  
+  smoothMove(servo1, 60, 143, 20);
+  smoothMove(servo2, 100, 93, 20);
+  servo3.write(65);
+  delay(1000);
+  servo2.write(130);
+  servo1.write(50);
+}
+
+void performSorting() {
+  servo2.write(130);
+  servo1.write(50);
+  delay(2000);
+  servo4.write(0);
+  delay(2000);
+  smoothMove(servo1, 50, 100, 30);
+  delay(1000);
+  smoothMove(servo2, 130, 115, 40);
+  delay(1000);
+  servo2.write(110);
+  delay(1000);
+  servo3.write(110);
+  delay(500);
+  servo2.write(100);
+  servo1.write(50);
+  delay(500);
+}
+
+// ======== Serial Communication ======== //
+void sendFinalSignal() {
+  if(isDefective) {
+    Serial.write('D');  // Send defect signal
+  } else {
+    switch(detectedColor) {
+      case 1: 
+        Serial.write('R');  // Red signal
+        break;
+      case 2:
+        Serial.write('G');  // Green signal
+        break;
+      case 3:
+        Serial.write('W');  // White signal
+        break;
+    }
+  }
+  // Small delay to ensure complete transmission
+  delay(10);
+}
+
+// ======== Helper Functions ======== //
+void smoothMove(Servo &servo, int start, int end, int stepDelay) {
+  if(start < end) {
+    for(int pos = start; pos <= end; pos++) {
+      servo.write(pos);
+      delay(stepDelay);
+    }
+  } else {
+    for(int pos = start; pos >= end; pos--) {
+      servo.write(pos);
+      delay(stepDelay);
+    }
+  }
+}
+
+void attachArmServos() {
+  servo1.attach(ARM1_PIN);
+  servo2.attach(ARM2_PIN);
+  servo3.attach(ARM3_PIN);
+  servo4.attach(ARM4_PIN);
+}
+
+void detachArmServos() {
+  if(servo1.attached()) servo1.detach();
+  if(servo2.attached()) servo2.detach();
+  if(servo3.attached()) servo3.detach();
+  if(servo4.attached()) servo4.detach();
+}
